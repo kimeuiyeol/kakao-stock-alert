@@ -124,6 +124,7 @@ def get_news_analysis(market_data):
 
 지침:
 - 문체: "~함", "~음" 개조식. "~습니다" 절대 금지
+- 마크다운 굵게 표시 (**, __) 사용 금지. 일반 텍스트만
 - 추측 금지, 검색 결과 기반
 - 데이터 없으면 "확인 불가"
 - 전체 1000~1400자
@@ -134,7 +135,11 @@ def get_news_analysis(market_data):
     data = {
         "contents": [{"parts": [{"text": prompt}]}],
         "tools": [{"google_search": {}}],
-        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 3500},
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 8000,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
     }
     res = requests.post(url, headers=headers, json=data, timeout=180)
     res.raise_for_status()
@@ -190,15 +195,26 @@ def build_full_report(md, analysis):
 
 
 def send_kakao_message(access_token, text):
-    """카카오톡 분할 발송 (175자 안전선)"""
+    """카카오톡 분할 발송 (한 줄 길어도 안전)"""
     url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
     headers = {"Authorization": f"Bearer {access_token}"}
 
-    lines = text.split('\n')
+    # 잔여 마크다운 강제 제거
+    text = text.replace('**', '').replace('__', '')
+
+    MAX = 165  # 라벨 [i/n]\n 공간 35자 여유
     chunks = []
     current = ""
-    for line in lines:
-        if len(current) + len(line) + 1 > 175:
+    for line in text.split('\n'):
+        # 한 줄이 MAX 넘으면 강제 분할
+        while len(line) > MAX:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:MAX])
+            line = line[MAX:]
+        # 누적
+        if len(current) + len(line) + 1 > MAX:
             if current:
                 chunks.append(current)
             current = line
@@ -210,8 +226,10 @@ def send_kakao_message(access_token, text):
     total = len(chunks)
     for i, chunk in enumerate(chunks, 1):
         chunk_with_idx = f"[{i}/{total}]\n{chunk}" if total > 1 else chunk
+        # 안전 장치
         if len(chunk_with_idx) > 200:
             chunk_with_idx = chunk_with_idx[:200]
+            print(f"⚠️ [{i}/{total}] 200자 초과 잘림")
 
         template = {
             "object_type": "text",
@@ -222,7 +240,7 @@ def send_kakao_message(access_token, text):
         data = {"template_object": json.dumps(template)}
         res = requests.post(url, headers=headers, data=data, timeout=15)
         res.raise_for_status()
-        print(f"[{i}/{total}] 전송 완료")
+        print(f"[{i}/{total}] 전송 완료 ({len(chunk_with_idx)}자)")
         if i < total:
             time.sleep(1.5)
 
