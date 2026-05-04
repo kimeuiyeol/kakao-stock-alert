@@ -1,0 +1,31 @@
+name: Market Summary to KakaoTalk
+
+on:
+  schedule:
+    # GitHub Actions cron은 UTC 기준
+    # 한국 7시 = UTC 22시(전날) → '0 22 * * *'
+    # 한국 19시 = UTC 10시 → '0 10 * * *'
+    - cron: '0 22 * * *'
+    - cron: '0 10 * * *'
+  workflow_dispatch:  # 수동 실행 버튼
+
+jobs:
+  send-summary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run market summary
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+        run: python main.py
