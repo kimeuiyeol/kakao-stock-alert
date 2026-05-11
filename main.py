@@ -141,8 +141,24 @@ def get_news_analysis(market_data):
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
-    res = requests.post(url, headers=headers, json=data, timeout=180)
-    res.raise_for_status()
+
+    # Gemini 5xx/타임아웃 대비 재시도
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            res = requests.post(url, headers=headers, json=data, timeout=180)
+            if res.status_code >= 500:
+                raise requests.HTTPError(f"{res.status_code} from Gemini", response=res)
+            res.raise_for_status()
+            break
+        except (requests.HTTPError, requests.ConnectionError, requests.Timeout) as e:
+            last_err = e
+            wait = 10 * attempt
+            print(f"[Gemini] {attempt}/3 실패: {e} → {wait}s 후 재시도")
+            time.sleep(wait)
+    else:
+        raise RuntimeError(f"Gemini 3회 재시도 실패: {last_err}")
+
     result = res.json()
 
     candidates = result.get('candidates', [])
@@ -238,8 +254,22 @@ def send_kakao_message(access_token, text):
                      "mobile_web_url": "https://finance.yahoo.com"},
         }
         data = {"template_object": json.dumps(template)}
-        res = requests.post(url, headers=headers, data=data, timeout=15)
-        res.raise_for_status()
+
+        # 일시적 5xx/타임아웃 대비 chunk 단위 재시도
+        last_err = None
+        for attempt in range(1, 4):
+            try:
+                res = requests.post(url, headers=headers, data=data, timeout=15)
+                res.raise_for_status()
+                break
+            except (requests.HTTPError, requests.ConnectionError, requests.Timeout) as e:
+                last_err = e
+                wait = 3 * attempt
+                print(f"[{i}/{total}] {attempt}/3 발송 실패: {e} → {wait}s 후 재시도")
+                time.sleep(wait)
+        else:
+            raise RuntimeError(f"[{i}/{total}] 카카오 발송 3회 실패: {last_err}")
+
         print(f"[{i}/{total}] 전송 완료 ({len(chunk_with_idx)}자)")
         if i < total:
             time.sleep(1.5)
