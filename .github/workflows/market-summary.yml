@@ -2,6 +2,9 @@ name: Market Summary to KakaoTalk
  
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'triggers/**'
  
 jobs:
   send-summary:
