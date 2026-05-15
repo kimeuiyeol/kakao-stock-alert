@@ -1,10 +1,11 @@
 name: Market Summary to KakaoTalk
  
 on:
+  schedule:
+    # KST 07:00 = UTC 22:00 (전날). 정시는 GitHub Actions 큐 혼잡으로 자주 밀려서
+    # 비정시 + 약간 일찍 잡아 7시 도착 가능성을 높임. 21:23 UTC = KST 06:23.
+    - cron: '23 21 * * *'
   workflow_dispatch:
-  push:
-    paths:
-      - 'triggers/**'
  
 jobs:
   send-summary:
