@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import base64
 import requests
 import yfinance as yf
 from datetime import datetime
@@ -9,6 +10,10 @@ from zoneinfo import ZoneInfo
 GEMINI_API_KEY = os.environ['GEMINI_API_KEY']
 KAKAO_REST_API_KEY = os.environ['KAKAO_REST_API_KEY']
 KAKAO_REFRESH_TOKEN = os.environ['KAKAO_REFRESH_TOKEN']
+
+# 토큰 자동 회전용 (없으면 비활성 → 기존처럼 새 토큰만 출력)
+GH_PAT = os.environ.get('GH_PAT')
+GH_REPO = os.environ.get('GITHUB_REPOSITORY')  # "owner/repo", Actions가 자동 주입
 
 
 def refresh_kakao_token():
@@ -21,6 +26,46 @@ def refresh_kakao_token():
     res = requests.post(url, data=data, timeout=15)
     res.raise_for_status()
     return res.json()
+
+
+def update_github_secret(name, value):
+    """새 refresh_token을 GitHub Secret에 다시 저장 (영구 회전).
+
+    PAT(GH_PAT)와 GITHUB_REPOSITORY가 있을 때만 동작. libsodium sealed box로
+    암호화 후 GitHub API로 PUT. 실패해도 발송은 계속되도록 예외를 삼킴.
+    """
+    if not (GH_PAT and GH_REPO):
+        print("⚠️ GH_PAT/GITHUB_REPOSITORY 없음 → Secret 자동 회전 생략 (수동 교체 필요)")
+        return False
+    try:
+        from nacl import encoding, public  # pynacl
+        api = f"https://api.github.com/repos/{GH_REPO}/actions/secrets"
+        headers = {
+            "Authorization": f"Bearer {GH_PAT}",
+            "Accept": "application/vnd.github+json",
+        }
+        # 1) 레포 공개키 조회
+        pk = requests.get(f"{api}/public-key", headers=headers, timeout=15)
+        pk.raise_for_status()
+        pk = pk.json()
+        # 2) sealed box 암호화
+        sealed = public.SealedBox(
+            public.PublicKey(pk["key"].encode(), encoding.Base64Encoder())
+        )
+        enc = base64.b64encode(sealed.encrypt(value.encode())).decode()
+        # 3) Secret 업데이트
+        put = requests.put(
+            f"{api}/{name}",
+            headers=headers,
+            json={"encrypted_value": enc, "key_id": pk["key_id"]},
+            timeout=15,
+        )
+        put.raise_for_status()
+        print(f"✅ GitHub Secret '{name}' 자동 회전 완료 (HTTP {put.status_code})")
+        return True
+    except Exception as e:
+        print(f"⚠️ Secret 자동 회전 실패: {e} → 수동 교체 필요")
+        return False
 
 
 def fmt_change(close, prev, currency="$"):
@@ -242,9 +287,10 @@ def main():
 
     if 'refresh_token' in token_data:
         print("=" * 50)
-        print("NEW REFRESH TOKEN ISSUED")
-        print(f"새 refresh_token: {token_data['refresh_token']}")
-        print("→ GitHub Secrets의 KAKAO_REFRESH_TOKEN 교체 필요")
+        print("NEW REFRESH TOKEN ISSUED → 자동 회전 시도")
+        if not update_github_secret("KAKAO_REFRESH_TOKEN", token_data['refresh_token']):
+            print(f"새 refresh_token: {token_data['refresh_token']}")
+            print("→ GitHub Secrets의 KAKAO_REFRESH_TOKEN 수동 교체 필요")
         print("=" * 50)
 
     print("2. yfinance로 가격 수집 (美 + 韓)")

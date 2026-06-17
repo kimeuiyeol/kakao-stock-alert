@@ -26,5 +26,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
           KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          # 토큰 자동 회전용 PAT (Secrets: read/write 권한). 없으면 회전만 생략됨.
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: python main.py
  
