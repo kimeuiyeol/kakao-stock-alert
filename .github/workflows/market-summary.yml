@@ -12,16 +12,36 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
- 
+
+      # 하루에 크론 + 외부 dispatch 등으로 여러 번 실행돼도 1통만 발송하기 위한 중복 방지.
+      # KST 날짜를 키로 캐시를 조회해서, 오늘 이미 발송했으면 이후 단계를 건너뜀.
+      - name: KST 날짜 계산
+        id: kst
+        run: echo "d=$(TZ=Asia/Seoul date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - name: 중복 방지 캐시 조회
+        id: guard
+        uses: actions/cache@v4
+        with:
+          path: .sent
+          key: sent-${{ steps.kst.outputs.d }}
+
+      - name: 오늘 이미 발송됨 → 건너뜀
+        if: steps.guard.outputs.cache-hit == 'true'
+        run: echo "이미 오늘(KST ${{ steps.kst.outputs.d }}) 발송 완료 → 중복 실행 스킵"
+
       - name: Set up Python
+        if: steps.guard.outputs.cache-hit != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
- 
+
       - name: Install dependencies
+        if: steps.guard.outputs.cache-hit != 'true'
         run: pip install -r requirements.txt
- 
+
       - name: Run market summary
+        if: steps.guard.outputs.cache-hit != 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
@@ -29,4 +49,10 @@ jobs:
           # 토큰 자동 회전용 PAT (Secrets: read/write 권한). 없으면 회전만 생략됨.
           GH_PAT: ${{ secrets.GH_PAT }}
         run: python main.py
+
+      # 발송 성공 후에만 마커 생성 → post-job에서 오늘 키로 캐시 저장.
+      # 발송 실패 시 마커가 없어 캐시도 안 남으므로 다음 실행이 재시도함.
+      - name: 발송 마커 생성
+        if: steps.guard.outputs.cache-hit != 'true'
+        run: date -u > .sent
  
