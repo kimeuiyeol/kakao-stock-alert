@@ -6,9 +6,10 @@ reddit.com은 클라우드 IP를 403으로 막지만 Arctic Shift(Reddit 아카�
 클라우드·PC 어디서든 실행 가능.
 
 감시 대상
-  - Reddit r/ClaudeCode, r/ClaudeAI, r/Anthropic, r/claude 새 글 + 새 댓글 (Arctic Shift 경유)
+  - Reddit Claude·AI 서브레딧 10곳 새 글 + 새 댓글 (Arctic Shift 경유)
   - claudecoworkcourse.com 게스트 패스 디렉터리
   - 아시아: 디시인사이드 클로드·AI활용 갤러리(韓), V2EX(中), Qiita(日)
+  - 글로벌: Hacker News, Lemmy(페디버스, Reddit 미러 포함), Mastodon 해시태그
   - 포털: 네이버 블로그·카페, 다음 블로그(티스토리)·카페 최신순 검색
     → 처음 보는 글이면 본문을 열어 링크 확인 (게시 시각 대신 '처음 발견한 시각' 기준)
 올라온 지 MAX_AGE_MIN분 이내 링크만 알림. 한 번 알린 링크는 seen 파일에 기록해 재알림 안 함.
@@ -35,7 +36,8 @@ from pathlib import Path
 
 import requests
 
-SUBREDDITS = "ClaudeCode+ClaudeAI+Anthropic+claude"
+SUBREDDITS = ("ClaudeCode+ClaudeAI+Anthropic+claude+ArtificialInteligence+vibecoding"
+              "+ChatGPTCoding+AI_Agents+singularity+cursor")
 DIRECTORY_URL = "https://claudecoworkcourse.com/claude-guest-passes"
 # Reddit API 규칙: 식별 가능한 User-Agent 필수
 USER_AGENT = "windows:claude-referral-watcher:v1.0 (personal use)"
@@ -49,6 +51,7 @@ BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 DC_GALLERIES = ("claude", "ai_utilize")  # 디시 마이너갤: 클로드(Claude), AI 활용
 SEEN_FILE = Path(__file__).with_name(".referral_seen.json")
 SEEN_POSTS_FILE = Path(__file__).with_name(".referral_seen_posts.json")  # 포털 검색에서 본 글 URL
+MASTODON_TAGS = ("claude", "claudeai", "claudecode", "anthropic")
 PORTAL_QUERIES = ("claude.ai/referral", "클로드 게스트패스", "claude guest pass")
 TOKEN_FILE = Path(__file__).with_name(".kakao_refresh_token")
 
@@ -233,6 +236,49 @@ def fetch_portals():
     return found
 
 
+def fetch_hn():
+    found = []
+    try:
+        res = get_json("https://hn.algolia.com/api/v1/search_by_date?query=claude.ai%2Freferral"
+                       f"&hitsPerPage=20&numericFilters=created_at_i>{int(time.time()) - MAX_AGE_MIN * 60}")
+        for h in res["hits"]:
+            text = " ".join(str(h.get(k) or "") for k in ("title", "url", "story_text", "comment_text"))
+            for link in find_links(text):
+                found.append((link, h["created_at_i"], f"https://news.ycombinator.com/item?id={h['objectID']}"))
+    except Exception as e:
+        print(f"  [hn] 실패: {e}")
+    return found
+
+
+def fetch_lemmy():
+    """lemmy.world 연합 검색 (다른 인스턴스 글 + Reddit 미러 커뮤니티 포함)"""
+    found = []
+    try:
+        res = get_json("https://lemmy.world/api/v3/search?q=claude.ai%2Freferral&type_=All&sort=New&limit=30")
+        for kind, key in (("posts", "post"), ("comments", "comment")):
+            for x in res.get(kind, []):
+                o = x[key]
+                created = datetime.fromisoformat(o["published"].replace("Z", "+00:00")).timestamp()
+                for link in find_links(json.dumps(o)):
+                    found.append((link, created, o["ap_id"]))
+    except Exception as e:
+        print(f"  [lemmy] 실패: {e}")
+    return found
+
+
+def fetch_mastodon():
+    found = []
+    for tag in MASTODON_TAGS:
+        try:
+            for st in get_json(f"https://mastodon.social/api/v1/timelines/tag/{tag}?limit=40"):
+                created = datetime.fromisoformat(st["created_at"].replace("Z", "+00:00")).timestamp()
+                for link in find_links(st.get("content", "")):
+                    found.append((link, created, st["url"]))
+        except Exception as e:
+            print(f"  [mastodon/{tag}] 실패: {e}")
+    return found
+
+
 def fetch_directory():
     """디렉터리 페이지의 __NEXT_DATA__ JSON에서 활성 코드 추출"""
     try:
@@ -310,7 +356,8 @@ def load_seen():
 def check(seen, open_browser):
     now = time.time()
     new = []
-    sources = fetch_reddit() + fetch_directory() + fetch_dcinside() + fetch_v2ex() + fetch_qiita() + fetch_portals()
+    sources = (fetch_reddit() + fetch_directory() + fetch_dcinside() + fetch_v2ex()
+               + fetch_qiita() + fetch_portals() + fetch_hn() + fetch_lemmy() + fetch_mastodon())
     for link, created, source in sources:
         age_min = int((now - created) // 60)
         if link in seen or age_min > MAX_AGE_MIN:
