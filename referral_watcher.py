@@ -8,6 +8,7 @@ reddit.com은 클라우드 IP를 403으로 막지만 Arctic Shift(Reddit 아카�
 감시 대상
   - Reddit r/ClaudeCode, r/ClaudeAI, r/Anthropic, r/claude 새 글 + 새 댓글 (Arctic Shift 경유)
   - claudecoworkcourse.com 게스트 패스 디렉터리
+  - 아시아: 디시인사이드 클로드·AI활용 갤러리(韓), V2EX(中), Qiita(日)
 올라온 지 MAX_AGE_MIN분 이내 링크만 알림. 한 번 알린 링크는 seen 파일에 기록해 재알림 안 함.
 
 실행
@@ -40,7 +41,10 @@ USER_AGENT = "windows:claude-referral-watcher:v1.0 (personal use)"
 INTERVAL_SEC = 180   # 확인 주기 (3분)
 MAX_AGE_MIN = 10     # 이 시간 이내에 올라온 링크만 알림
 
-LINK_RE = re.compile(r"https?://claude\.ai/referral/[A-Za-z0-9_-]+")
+LINK_RE = re.compile(r"claude\.ai/referral/[A-Za-z0-9_-]+")  # 스킴 없이 붙여넣는 경우 포함
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
+DC_GALLERIES = ("claude", "ai_utilize")  # 디시 마이너갤: 클로드(Claude), AI 활용
 SEEN_FILE = Path(__file__).with_name(".referral_seen.json")
 TOKEN_FILE = Path(__file__).with_name(".kakao_refresh_token")
 
@@ -55,9 +59,13 @@ def get_json(url, **kw):
     return res.json()
 
 
+def find_links(text):
+    return {"https://" + m for m in LINK_RE.findall(text or "")}
+
+
 def extract(d, found):
     text = " ".join(str(d.get(k) or "") for k in ("title", "selftext", "url", "body"))
-    for link in set(LINK_RE.findall(text)):
+    for link in find_links(text):
         found.append((link, d["created_utc"], "https://www.reddit.com" + d.get("permalink", "")))
 
 
@@ -86,6 +94,70 @@ def fetch_reddit():
                 extract(c["data"], found)
         except Exception:
             pass  # 클라우드에선 403이 정상
+    return found
+
+
+def fetch_dcinside():
+    """디시 갤러리 목록에서 MAX_AGE_MIN 이내 글만 본문 열어 링크 추출 (KST 기준 시각)"""
+    found = []
+    cutoff = time.time() - MAX_AGE_MIN * 60
+    row_re = re.compile(r'gall_num">(\d+)</td>.*?gall_date" title="([^"]+)"', re.S)
+    for gid in DC_GALLERIES:
+        base = "https://gall.dcinside.com/mgallery/board"
+        try:
+            html = requests.get(f"{base}/lists/?id={gid}", headers={"User-Agent": BROWSER_UA}, timeout=20).text
+        except Exception as e:
+            print(f"  [dc/{gid}] 실패: {e}")
+            continue
+        for no, date in row_re.findall(html):
+            created = datetime.strptime(date + " +0900", "%Y-%m-%d %H:%M:%S %z").timestamp()
+            if created < cutoff:
+                continue
+            url = f"{base}/view/?id={gid}&no={no}"
+            try:
+                body = requests.get(url, headers={"User-Agent": BROWSER_UA}, timeout=20).text
+            except Exception:
+                continue
+            for link in find_links(body):
+                found.append((link, created, url))
+            time.sleep(1)
+    return found
+
+
+def fetch_v2ex():
+    """V2EX 최신 글(API) + sov2ex 본문·댓글 검색"""
+    found = []
+    try:
+        for t in get_json("https://www.v2ex.com/api/topics/latest.json"):
+            for link in find_links(t.get("title", "") + " " + t.get("content", "")):
+                found.append((link, t["created"], t["url"]))
+    except Exception as e:
+        print(f"  [v2ex] 실패: {e}")
+    gte = int(time.time()) - MAX_AGE_MIN * 60
+    try:
+        res = get_json("https://www.sov2ex.com/api/search?q=claude.ai%2Freferral"
+                       f"&sort=created&order=0&size=20&gte={gte}")
+        for h in res.get("hits", []):
+            src = h["_source"]
+            text = json.dumps(h.get("highlight", {})).replace("<em>", "").replace("</em>", "")
+            created = datetime.fromisoformat(src["created"] + "+00:00").timestamp()
+            for link in find_links(text):
+                found.append((link, created, f"https://www.v2ex.com/t/{src['id']}"))
+    except Exception as e:
+        print(f"  [sov2ex] 실패: {e}")
+    return found
+
+
+def fetch_qiita():
+    """Qiita 본문 검색 (비로그인 60회/시간 제한 → 3분 주기면 20회/시간)"""
+    found = []
+    try:
+        for item in get_json("https://qiita.com/api/v2/items?query=claude.ai%2Freferral&per_page=20"):
+            created = datetime.fromisoformat(item["created_at"]).timestamp()
+            for link in find_links(item["body"]):
+                found.append((link, created, item["url"]))
+    except Exception as e:
+        print(f"  [qiita] 실패: {e}")
     return found
 
 
@@ -166,7 +238,8 @@ def load_seen():
 def check(seen, open_browser):
     now = time.time()
     new = []
-    for link, created, source in fetch_reddit() + fetch_directory():
+    sources = fetch_reddit() + fetch_directory() + fetch_dcinside() + fetch_v2ex() + fetch_qiita()
+    for link, created, source in sources:
         age_min = int((now - created) // 60)
         if link in seen or age_min > MAX_AGE_MIN:
             continue
