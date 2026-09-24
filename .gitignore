@@ -1,0 +1,4 @@
+__pycache__/
+# referral_watcher.py 로컬 상태 (토큰은 절대 커밋 금지)
+.referral_seen.json
+.kakao_refresh_token
