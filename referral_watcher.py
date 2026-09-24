@@ -2,11 +2,11 @@
 """
 Claude 게스트 패스(claude.ai/referral/...) 신규 링크 감시 → 카톡 알림.
 
-Reddit은 클라우드(데이터센터) IP를 403으로 막기 때문에 GitHub Actions가 아닌
-개인 PC(가정/회사 IP)에서 실행해야 함.
+reddit.com은 클라우드 IP를 403으로 막지만 Arctic Shift(Reddit 아카이브) 경유라
+클라우드·PC 어디서든 실행 가능.
 
 감시 대상
-  - Reddit r/ClaudeCode, r/ClaudeAI 새 글 + 새 댓글
+  - Reddit r/ClaudeCode, r/ClaudeAI, r/Anthropic, r/claude 새 글 + 새 댓글 (Arctic Shift 경유)
   - claudecoworkcourse.com 게스트 패스 디렉터리
 올라온 지 MAX_AGE_MIN분 이내 링크만 알림. 한 번 알린 링크는 seen 파일에 기록해 재알림 안 함.
 
@@ -32,7 +32,7 @@ from pathlib import Path
 
 import requests
 
-SUBREDDITS = "ClaudeCode+ClaudeAI"
+SUBREDDITS = "ClaudeCode+ClaudeAI+Anthropic+claude"
 DIRECTORY_URL = "https://claudecoworkcourse.com/claude-guest-passes"
 # Reddit API 규칙: 식별 가능한 User-Agent 필수
 USER_AGENT = "windows:claude-referral-watcher:v1.0 (personal use)"
@@ -55,21 +55,37 @@ def get_json(url, **kw):
     return res.json()
 
 
+def extract(d, found):
+    text = " ".join(str(d.get(k) or "") for k in ("title", "selftext", "url", "body"))
+    for link in set(LINK_RE.findall(text)):
+        found.append((link, d["created_utc"], "https://www.reddit.com" + d.get("permalink", "")))
+
+
 def fetch_reddit():
-    """새 글 + 새 댓글에서 (링크, 올라온시각, 출처URL) 추출"""
+    """새 글 + 새 댓글에서 (링크, 올라온시각, 출처URL) 추출.
+
+    reddit.com 직접 조회는 데이터센터 IP에서 403 → Arctic Shift(Reddit 아카이브,
+    수집 지연 1~5분)를 기본으로 쓰고, reddit.com은 PC 실행 시 보조로 시도.
+    """
     found = []
+    after = int(time.time()) - MAX_AGE_MIN * 60
+    for sub in SUBREDDITS.split("+"):
+        for kind in ("posts", "comments"):
+            url = (f"https://arctic-shift.photon-reddit.com/api/{kind}/search"
+                   f"?subreddit={sub}&after={after}&limit=100&sort=desc")
+            try:
+                for d in get_json(url).get("data") or []:
+                    extract(d, found)
+            except Exception as e:
+                print(f"  [arctic/{sub}/{kind}] 실패: {e}")
+            time.sleep(1)  # API 부하 배려
     for kind in ("new", "comments"):
         url = f"https://www.reddit.com/r/{SUBREDDITS}/{kind}.json?limit=100&raw_json=1"
         try:
-            items = get_json(url)["data"]["children"]
-        except Exception as e:
-            print(f"  [reddit/{kind}] 실패: {e}")
-            continue
-        for c in items:
-            d = c["data"]
-            text = " ".join(d.get(k) or "" for k in ("title", "selftext", "url", "body"))
-            for link in set(LINK_RE.findall(text)):
-                found.append((link, d["created_utc"], "https://www.reddit.com" + d["permalink"]))
+            for c in get_json(url)["data"]["children"]:
+                extract(c["data"], found)
+        except Exception:
+            pass  # 클라우드에선 403이 정상
     return found
 
 
