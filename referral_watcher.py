@@ -9,6 +9,8 @@ reddit.com은 클라우드 IP를 403으로 막지만 Arctic Shift(Reddit 아카�
   - Reddit r/ClaudeCode, r/ClaudeAI, r/Anthropic, r/claude 새 글 + 새 댓글 (Arctic Shift 경유)
   - claudecoworkcourse.com 게스트 패스 디렉터리
   - 아시아: 디시인사이드 클로드·AI활용 갤러리(韓), V2EX(中), Qiita(日)
+  - 포털: 네이버 블로그·카페, 다음 블로그(티스토리)·카페 최신순 검색
+    → 처음 보는 글이면 본문을 열어 링크 확인 (게시 시각 대신 '처음 발견한 시각' 기준)
 올라온 지 MAX_AGE_MIN분 이내 링크만 알림. 한 번 알린 링크는 seen 파일에 기록해 재알림 안 함.
 
 실행
@@ -46,6 +48,8 @@ BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
 DC_GALLERIES = ("claude", "ai_utilize")  # 디시 마이너갤: 클로드(Claude), AI 활용
 SEEN_FILE = Path(__file__).with_name(".referral_seen.json")
+SEEN_POSTS_FILE = Path(__file__).with_name(".referral_seen_posts.json")  # 포털 검색에서 본 글 URL
+PORTAL_QUERIES = ("claude.ai/referral", "클로드 게스트패스", "claude guest pass")
 TOKEN_FILE = Path(__file__).with_name(".kakao_refresh_token")
 
 KAKAO_REST_API_KEY = os.environ.get("KAKAO_REST_API_KEY")
@@ -161,6 +165,74 @@ def fetch_qiita():
     return found
 
 
+def portal_search_urls(query):
+    q = requests.utils.quote(query)
+    return [
+        f"https://search.naver.com/search.naver?ssc=tab.blog.all&query={q}&sm=tab_opt&nso=so:dd,p:1d",
+        f"https://search.naver.com/search.naver?ssc=tab.cafe.all&query={q}&sm=tab_opt&nso=so:dd,p:1d",
+        f"https://search.daum.net/search?w=fusion&col=blog&q={q}&sort=recency",
+        f"https://search.daum.net/search?w=fusion&col=cafe&q={q}&sort=recency",
+    ]
+
+
+POST_RE = re.compile(
+    r"https?://(?:blog\.naver\.com/[A-Za-z0-9_]+/\d+"
+    r"|cafe\.naver\.com/[A-Za-z0-9_]+/\d+"
+    r"|cafe\.daum\.net/[^/\"\s]+/[^/\"\s]+/[A-Za-z0-9]+"
+    r"|[a-z0-9-]+\.tistory\.com/(?:entry/)?[^\"?#\s<]+)"
+)
+
+
+def fetch_portals():
+    """네이버·다음 최신순 검색 → 처음 보는 글만 본문 열어 링크 추출.
+
+    포털 검색 결과엔 정확한 게시 시각이 없어서 '처음 발견한 시각'을 게시 시각으로 간주.
+    최초 실행 시에는 기존 글을 기록만 하고 알림 안 함(과거 글 폭탄 방지).
+    """
+    found = []
+    first_run = not SEEN_POSTS_FILE.exists()
+    try:
+        seen_posts = set(json.loads(SEEN_POSTS_FILE.read_text()))
+    except Exception:
+        seen_posts = set()
+    now = time.time()
+    headers = {"User-Agent": BROWSER_UA, "Accept-Language": "ko-KR"}
+    for query in PORTAL_QUERIES:
+        for url in portal_search_urls(query):
+            try:
+                page = requests.get(url, headers=headers, timeout=20).text
+            except Exception as e:
+                print(f"  [portal] 실패: {e}")
+                continue
+            for link in find_links(page):  # 검색 요약문에 링크가 바로 보이는 경우 (카페 멤버 전용 글)
+                key = "snippet:" + link
+                if key not in seen_posts:
+                    seen_posts.add(key)
+                    if not first_run:
+                        found.append((link, now, url))
+            for post in dict.fromkeys(POST_RE.findall(page)):
+                if post in seen_posts:
+                    continue
+                seen_posts.add(post)
+                if first_run:
+                    continue
+                m = re.match(r"https?://blog\.naver\.com/([A-Za-z0-9_]+)/(\d+)", post)
+                view = (f"https://blog.naver.com/PostView.naver?blogId={m.group(1)}&logNo={m.group(2)}"
+                        if m else post)
+                try:
+                    body = requests.get(view, headers=headers, timeout=20).text
+                except Exception:
+                    continue  # 카페 멤버 전용 글 등
+                for link in find_links(body):
+                    found.append((link, now, post))
+                time.sleep(1)
+            time.sleep(1)
+    SEEN_POSTS_FILE.write_text(json.dumps(sorted(seen_posts)))
+    if first_run:
+        print(f"  [portal] 최초 실행: 기존 글 {len(seen_posts)}개 기록 (알림 없음)")
+    return found
+
+
 def fetch_directory():
     """디렉터리 페이지의 __NEXT_DATA__ JSON에서 활성 코드 추출"""
     try:
@@ -238,7 +310,7 @@ def load_seen():
 def check(seen, open_browser):
     now = time.time()
     new = []
-    sources = fetch_reddit() + fetch_directory() + fetch_dcinside() + fetch_v2ex() + fetch_qiita()
+    sources = fetch_reddit() + fetch_directory() + fetch_dcinside() + fetch_v2ex() + fetch_qiita() + fetch_portals()
     for link, created, source in sources:
         age_min = int((now - created) // 60)
         if link in seen or age_min > MAX_AGE_MIN:
